@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { buildPnpmInvocation, resolvePnpmRunnerOrThrow } from "./package-runner.js";
 
 type RunResult = {
   code: number | null;
@@ -32,10 +34,12 @@ async function runCommand(
   args: string[],
   env: NodeJS.ProcessEnv,
 ): Promise<RunResult> {
+  const invocation = resolveOpenClawInvocation(args, env);
   return await new Promise((resolve, reject) => {
-    const child = spawn("pnpm", args, {
+    const child = spawn(invocation.command, invocation.args, {
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      shell: invocation.shell,
     });
     let stdout = "";
     let stderr = "";
@@ -62,6 +66,15 @@ async function runCommand(
       console.error(summary);
     });
   });
+}
+
+export function resolveOpenClawInvocation(
+  args: string[],
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+) {
+  const runner = resolvePnpmRunnerOrThrow({ env, platform });
+  return buildPnpmInvocation(runner, args, platform);
 }
 
 async function main() {
@@ -162,7 +175,14 @@ async function main() {
   process.exit(run2.code ?? 1);
 }
 
-main().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+const isDirectExecution = (() => {
+  const entry = process.argv[1];
+  return Boolean(entry && path.resolve(entry) === fileURLToPath(import.meta.url));
+})();
+
+if (isDirectExecution) {
+  main().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}

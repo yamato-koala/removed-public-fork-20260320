@@ -1,5 +1,12 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { assertSafeWindowsShellArgs, shouldUseShellForCommand } from "../../scripts/ui.js";
+import {
+  assertSafeWindowsShellArgs,
+  resolveRunner,
+  shouldUseShellForCommand,
+} from "../../scripts/ui.js";
 
 describe("scripts/ui windows spawn behavior", () => {
   it("enables shell for Windows command launchers that require cmd.exe", () => {
@@ -31,5 +38,22 @@ describe("scripts/ui windows spawn behavior", () => {
 
   it("does not reject args on non-windows platforms", () => {
     expect(() => assertSafeWindowsShellArgs(["contains&metacharacters"], "linux")).not.toThrow();
+  });
+
+  it("falls back to corepack when pnpm is not directly on PATH", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-ui-runner-"));
+    try {
+      const corepackPath = path.join(tempDir, "corepack");
+      fs.writeFileSync(corepackPath, "#!/bin/sh\n", "utf8");
+      fs.chmodSync(corepackPath, 0o755);
+
+      expect(resolveRunner({ PATH: tempDir }, "linux")).toEqual({
+        command: corepackPath,
+        prefixArgs: ["pnpm"],
+        shell: false,
+      });
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
