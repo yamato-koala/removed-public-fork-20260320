@@ -8,6 +8,8 @@ title: "Tests"
 # Tests
 
 - Full testing kit (suites, live, Docker): [Testing](/help/testing)
+- Package runner fallback: local dev/test scripts do not require a bare `pnpm` binary. If your shell exposes `corepack` but not `pnpm`, run the same commands as `corepack pnpm <command>` (for example `corepack pnpm test` or `corepack pnpm check`).
+- When adding or editing dev/test helpers, do not hard-code `pnpm` as a bare binary assumption. Reuse the shared package-runner resolution path so non-interactive shells keep working.
 
 - `pnpm test:force`: Kills any lingering gateway process holding the default control port, then runs the full Vitest suite with an isolated gateway port so server tests don’t collide with a running instance. Use this when a prior gateway run left port 18789 occupied.
 - `pnpm test:coverage`: Runs the unit suite with V8 coverage (via `vitest.unit.config.ts`). Global thresholds are 70% lines/branches/functions/statements. Coverage excludes integration-heavy entrypoints (CLI wiring, gateway/telegram bridges, webchat static server) to keep the target focused on unit-testable logic.
