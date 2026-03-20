@@ -399,6 +399,22 @@ describe("routeReply", () => {
     );
   });
 
+  it("awaits sent-hook completion when routing with a session key", async () => {
+    mocks.deliverOutboundPayloads.mockResolvedValue([]);
+    await routeReply({
+      payload: { text: "hi" },
+      channel: "slack",
+      to: "channel:C123",
+      sessionKey: "agent:main:main",
+      cfg: {} as never,
+    });
+    expect(mocks.deliverOutboundPayloads).toHaveBeenCalledWith(
+      expect.objectContaining({
+        awaitHookCompletion: true,
+      }),
+    );
+  });
+
   it("skips mirror data when mirror is false", async () => {
     mocks.deliverOutboundPayloads.mockResolvedValue([]);
     await routeReply({

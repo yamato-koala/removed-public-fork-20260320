@@ -16,6 +16,7 @@ import {
 } from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
+import { createDedupeCache } from "../../infra/dedupe.js";
 import { emitDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import { generateSecureUuid } from "../../infra/secure-random.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
@@ -54,11 +55,84 @@ import { resolveActiveRunQueueAction } from "./queue-policy.js";
 import { enqueueFollowupRun, type FollowupRun, type QueueSettings } from "./queue.js";
 import { createReplyMediaPathNormalizer } from "./reply-media-paths.js";
 import { createReplyToModeFilterForChannel, resolveReplyToMode } from "./reply-threading.js";
+import { isRoutableChannel, routeReply } from "./route-reply.js";
 import { incrementRunCompactionCount, persistRunSessionUsage } from "./session-run-accounting.js";
 import { createTypingSignaler } from "./typing-mode.js";
 import type { TypingController } from "./typing.js";
 
 const BLOCK_REPLY_SEND_TIMEOUT_MS = 15_000;
+const BUSY_QUEUE_ACK_TEXT = "Message received. I'm finishing another task and will review it next.";
+const BUSY_QUEUE_ACK_COOLDOWN_MS = 30_000;
+const RECENT_BUSY_QUEUE_ACKS = createDedupeCache({
+  ttlMs: BUSY_QUEUE_ACK_COOLDOWN_MS,
+  maxSize: 10_000,
+});
+
+function buildBusyQueueAckKey(queueKey: string, followupRun: FollowupRun): string {
+  return JSON.stringify([
+    "busy-queue-ack",
+    queueKey,
+    followupRun.originatingChannel ?? "",
+    followupRun.originatingTo ?? "",
+    followupRun.originatingAccountId ?? "",
+    followupRun.originatingThreadId == null ? "" : String(followupRun.originatingThreadId),
+  ]);
+}
+
+async function sendBusyQueueAck(params: {
+  queueKey: string;
+  followupRun: FollowupRun;
+  opts?: GetReplyOptions;
+}): Promise<void> {
+  const { queueKey, followupRun, opts } = params;
+  const ackKey = buildBusyQueueAckKey(queueKey, followupRun);
+  if (RECENT_BUSY_QUEUE_ACKS.peek(ackKey)) {
+    return;
+  }
+
+  const payload: ReplyPayload = { text: BUSY_QUEUE_ACK_TEXT };
+  const { originatingChannel, originatingTo } = followupRun;
+  const canRouteToOriginating = isRoutableChannel(originatingChannel) && Boolean(originatingTo);
+  if (canRouteToOriginating) {
+    const result = await routeReply({
+      payload,
+      channel: originatingChannel,
+      to: originatingTo!,
+      sessionKey: followupRun.run.sessionKey,
+      accountId: followupRun.originatingAccountId,
+      threadId: followupRun.originatingThreadId,
+      cfg: followupRun.run.config,
+      mirror: false,
+    });
+    if (result.ok) {
+      RECENT_BUSY_QUEUE_ACKS.check(ackKey);
+      return;
+    }
+    defaultRuntime.error?.(`busy queue ack route failed: ${result.error ?? "unknown error"}`);
+    const provider = resolveOriginMessageProvider({
+      provider: followupRun.run.messageProvider,
+    });
+    const origin = resolveOriginMessageProvider({
+      originatingChannel,
+    });
+    if (!opts?.onBlockReply || !origin || origin !== provider) {
+      return;
+    }
+  } else if (!opts?.onBlockReply) {
+    return;
+  }
+
+  try {
+    await opts.onBlockReply?.(payload);
+    RECENT_BUSY_QUEUE_ACKS.check(ackKey);
+  } catch (err) {
+    defaultRuntime.error?.(`busy queue ack fallback delivery failed: ${String(err)}`);
+  }
+}
+
+export function resetBusyQueueAckDedupeForTests(): void {
+  RECENT_BUSY_QUEUE_ACKS.clear();
+}
 
 export async function runReplyAgent(params: {
   commandBody: string;
@@ -216,7 +290,14 @@ export async function runReplyAgent(params: {
   }
 
   if (activeRunQueueAction === "enqueue-followup") {
-    enqueueFollowupRun(queueKey, followupRun, resolvedQueue);
+    const enqueued = enqueueFollowupRun(queueKey, followupRun, resolvedQueue);
+    if (enqueued) {
+      await sendBusyQueueAck({
+        queueKey,
+        followupRun,
+        opts,
+      });
+    }
     await touchActiveSessionEntry();
     typing.cleanup();
     return undefined;

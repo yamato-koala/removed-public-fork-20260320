@@ -37,20 +37,26 @@ type EmbeddedRunParams = {
 const state = vi.hoisted(() => ({
   runEmbeddedPiAgentMock: vi.fn(),
   runCliAgentMock: vi.fn(),
+  routeReplyMock: vi.fn(async () => ({ ok: true, messageId: "ack-1" })),
 }));
 
 let modelFallbackModule: typeof import("../../agents/model-fallback.js");
 let onAgentEvent: typeof import("../../infra/agent-events.js").onAgentEvent;
-
-let runReplyAgentPromise:
-  | Promise<(typeof import("./agent-runner.js"))["runReplyAgent"]>
+let resetBusyQueueAckDedupeForTests:
+  | (typeof import("./agent-runner.js"))["resetBusyQueueAckDedupeForTests"]
   | undefined;
 
-async function getRunReplyAgent() {
-  if (!runReplyAgentPromise) {
-    runReplyAgentPromise = import("./agent-runner.js").then((m) => m.runReplyAgent);
+let agentRunnerModulePromise: Promise<typeof import("./agent-runner.js")> | undefined;
+
+async function getAgentRunnerModule() {
+  if (!agentRunnerModulePromise) {
+    agentRunnerModulePromise = import("./agent-runner.js");
   }
-  return await runReplyAgentPromise;
+  return await agentRunnerModulePromise;
+}
+
+async function getRunReplyAgent() {
+  return (await getAgentRunnerModule()).runReplyAgent;
 }
 
 vi.mock("../../agents/model-fallback.js", () => ({
@@ -84,18 +90,26 @@ vi.mock("./queue.js", () => ({
   scheduleFollowupDrain: vi.fn(),
 }));
 
+vi.mock("./route-reply.js", () => ({
+  routeReply: (params: unknown) => state.routeReplyMock(params),
+  isRoutableChannel: (channel: unknown) => channel != null && channel !== "webchat",
+}));
+
 beforeAll(async () => {
   // Avoid attributing the initial agent-runner import cost to the first test case.
   modelFallbackModule = await import("../../agents/model-fallback.js");
   ({ onAgentEvent } = await import("../../infra/agent-events.js"));
-  await getRunReplyAgent();
+  ({ resetBusyQueueAckDedupeForTests } = await getAgentRunnerModule());
 });
 
 beforeEach(() => {
   state.runEmbeddedPiAgentMock.mockClear();
   state.runCliAgentMock.mockClear();
+  state.routeReplyMock.mockClear();
   vi.mocked(enqueueFollowupRun).mockClear();
+  vi.mocked(enqueueFollowupRun).mockReturnValue(true);
   vi.mocked(scheduleFollowupDrain).mockClear();
+  resetBusyQueueAckDedupeForTests?.();
   vi.stubEnv("OPENCLAW_TEST_FAST", "1");
 });
 
@@ -111,6 +125,7 @@ function createMinimalRun(params?: {
   isActive?: boolean;
   shouldFollowup?: boolean;
   resolvedQueueMode?: string;
+  followupRunOverrides?: Partial<FollowupRun>;
   runOverrides?: Partial<FollowupRun["run"]>;
 }) {
   const typing = createMockTypingController();
@@ -127,6 +142,7 @@ function createMinimalRun(params?: {
     prompt: "hello",
     summaryLine: "hello",
     enqueuedAt: Date.now(),
+    ...params?.followupRunOverrides,
     run: {
       sessionId: "session",
       sessionKey,
@@ -319,6 +335,91 @@ describe("runReplyAgent heartbeat followup guard", () => {
     expect(result).toBeUndefined();
     expect(vi.mocked(enqueueFollowupRun)).toHaveBeenCalledTimes(1);
     expect(state.runEmbeddedPiAgentMock).not.toHaveBeenCalled();
+  });
+
+  it("routes a busy-queue ACK back to the originating channel without mirroring", async () => {
+    const { run } = createMinimalRun({
+      isActive: true,
+      shouldFollowup: true,
+      resolvedQueueMode: "collect",
+      followupRunOverrides: {
+        originatingChannel: "telegram",
+        originatingTo: "telegram:123",
+        originatingAccountId: "primary",
+        originatingThreadId: 42,
+      },
+    });
+
+    await run();
+
+    expect(state.routeReplyMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: { text: "Message received. I'm finishing another task and will review it next." },
+        channel: "telegram",
+        to: "telegram:123",
+        accountId: "primary",
+        threadId: 42,
+        mirror: false,
+      }),
+    );
+  });
+
+  it("dedupes busy-queue ACKs during short bursts", async () => {
+    const onBlockReply = vi.fn();
+    const runParams = {
+      opts: { onBlockReply },
+      isActive: true,
+      shouldFollowup: true,
+      resolvedQueueMode: "collect",
+    } as const;
+
+    const first = createMinimalRun(runParams);
+    const second = createMinimalRun(runParams);
+
+    await first.run();
+    await second.run();
+
+    expect(onBlockReply).toHaveBeenCalledTimes(1);
+    expect(onBlockReply).toHaveBeenCalledWith({
+      text: "Message received. I'm finishing another task and will review it next.",
+    });
+  });
+
+  it("retries busy-queue ACKs after a delivery failure", async () => {
+    const onBlockReply = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("send failed"))
+      .mockResolvedValueOnce(undefined);
+    const runParams = {
+      opts: { onBlockReply },
+      isActive: true,
+      shouldFollowup: true,
+      resolvedQueueMode: "collect",
+    } as const;
+
+    const first = createMinimalRun(runParams);
+    const second = createMinimalRun(runParams);
+
+    await first.run();
+    await second.run();
+
+    expect(onBlockReply).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not send a busy-queue ACK when enqueue dedupe rejects the item", async () => {
+    vi.mocked(enqueueFollowupRun).mockReturnValueOnce(false);
+    const onBlockReply = vi.fn();
+    const { run } = createMinimalRun({
+      opts: { onBlockReply },
+      isActive: true,
+      shouldFollowup: true,
+      resolvedQueueMode: "collect",
+    });
+
+    await run();
+
+    expect(onBlockReply).not.toHaveBeenCalled();
+    expect(state.routeReplyMock).not.toHaveBeenCalled();
   });
 
   it("drains followup queue when an unexpected exception escapes the run path", async () => {

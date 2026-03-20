@@ -151,6 +151,7 @@ export async function routeReply(params: RouteReplyParams): Promise<RouteReplyRe
       threadId: resolvedThreadId,
       session: outboundSession,
       abortSignal,
+      awaitHookCompletion: Boolean(params.sessionKey),
       mirror:
         params.mirror !== false && params.sessionKey
           ? {
