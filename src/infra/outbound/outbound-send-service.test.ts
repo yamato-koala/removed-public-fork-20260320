@@ -5,6 +5,18 @@ const mocks = vi.hoisted(() => ({
   sendMessage: vi.fn(),
   sendPoll: vi.fn(),
   getAgentScopedMediaLocalRoots: vi.fn(() => ["/tmp/agent-roots"]),
+  createInternalHookEvent: vi.fn((type, action, sessionKey, context) => ({
+    type,
+    action,
+    sessionKey,
+    context,
+  })),
+  triggerInternalHook: vi.fn(async () => {}),
+  hookRunner: {
+    hasHooks: vi.fn(() => false),
+    runMessageSent: vi.fn(async () => {}),
+  },
+  logWarn: vi.fn(),
 }));
 
 vi.mock("../../channels/plugins/message-actions.js", () => ({
@@ -19,6 +31,22 @@ vi.mock("./message.js", () => ({
 vi.mock("../../media/local-roots.js", () => ({
   getAgentScopedMediaLocalRoots: mocks.getAgentScopedMediaLocalRoots,
 }));
+vi.mock("../../hooks/internal-hooks.js", () => ({
+  createInternalHookEvent: mocks.createInternalHookEvent,
+  triggerInternalHook: mocks.triggerInternalHook,
+}));
+vi.mock("../../plugins/hook-runner-global.js", () => ({
+  getGlobalHookRunner: () => mocks.hookRunner,
+}));
+vi.mock("../../logging/subsystem.js", () => ({
+  createSubsystemLogger: () => ({
+    warn: mocks.logWarn,
+    info: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+    child: vi.fn(),
+  }),
+}));
 
 import { executePollAction, executeSendAction } from "./outbound-send-service.js";
 
@@ -28,6 +56,12 @@ describe("executeSendAction", () => {
     mocks.sendMessage.mockClear();
     mocks.sendPoll.mockClear();
     mocks.getAgentScopedMediaLocalRoots.mockClear();
+    mocks.createInternalHookEvent.mockClear();
+    mocks.triggerInternalHook.mockClear();
+    mocks.hookRunner.hasHooks.mockClear();
+    mocks.hookRunner.hasHooks.mockReturnValue(false);
+    mocks.hookRunner.runMessageSent.mockClear();
+    mocks.logWarn.mockClear();
   });
 
   it("forwards ctx.agentId to sendMessage on core outbound path", async () => {
@@ -118,6 +152,66 @@ describe("executeSendAction", () => {
         mediaLocalRoots: ["/tmp/agent-roots"],
       }),
     );
+  });
+
+  it("emits sent hooks when plugin outbound send succeeds", async () => {
+    mocks.dispatchChannelMessageAction.mockResolvedValue({
+      ok: true,
+      content: [
+        {
+          type: "text",
+          text: JSON.stringify({ ok: true, messageId: "tg-123", chatId: "8768311198" }),
+        },
+      ],
+      continuePrompt: "",
+      output: "",
+      sessionId: "s1",
+      model: "gpt-5.2",
+      usage: {},
+    });
+    mocks.hookRunner.hasHooks.mockReturnValue(true);
+
+    const result = await executeSendAction({
+      ctx: {
+        cfg: {},
+        channel: "telegram",
+        params: { to: "8768311198", message: "hello", __sessionKey: "agent:main:main" },
+        mirror: {
+          sessionKey: "agent:main:main",
+          text: "hello",
+        },
+        dryRun: false,
+      },
+      to: "8768311198",
+      message: "hello",
+    });
+
+    expect(result.handledBy).toBe("plugin");
+    expect(mocks.hookRunner.runMessageSent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "8768311198",
+        content: "hello",
+        success: true,
+      }),
+      expect.objectContaining({
+        channelId: "telegram",
+        conversationId: "8768311198",
+      }),
+    );
+    expect(mocks.createInternalHookEvent).toHaveBeenCalledWith(
+      "message",
+      "sent",
+      "agent:main:main",
+      expect.objectContaining({
+        to: "8768311198",
+        content: "hello",
+        success: true,
+        channelId: "telegram",
+        conversationId: "8768311198",
+        messageId: "tg-123",
+      }),
+    );
+    expect(mocks.triggerInternalHook).toHaveBeenCalledTimes(1);
   });
 
   it("forwards poll args to sendPoll on core outbound path", async () => {

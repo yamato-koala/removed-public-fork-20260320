@@ -68,6 +68,22 @@ async function runThreadingAction(params: {
   };
 }
 
+async function runCliSendAction(params: {
+  cfg: OpenClawConfig;
+  actionParams: Record<string, unknown>;
+  toolContext?: Record<string, unknown>;
+}) {
+  await runMessageAction({
+    cfg: params.cfg,
+    action: "send",
+    params: params.actionParams as never,
+    toolContext: params.toolContext as never,
+  });
+  return mocks.executeSendAction.mock.calls[0]?.[0] as {
+    ctx?: { agentId?: string; mirror?: { sessionKey?: string }; params?: Record<string, unknown> };
+  };
+}
+
 function mockHandledSendAction() {
   mocks.executeSendAction.mockResolvedValue({
     handledBy: "plugin",
@@ -202,6 +218,23 @@ describe("runMessageAction threading auto-injection", () => {
 
     expect(call?.threadId).toBe("999");
     expect(call?.ctx?.params?.threadId).toBe("999");
+  });
+
+  it("derives default-agent session routing for cli sends without explicit agentId", async () => {
+    mockHandledSendAction();
+
+    const call = await runCliSendAction({
+      cfg: telegramConfig,
+      actionParams: {
+        channel: "telegram",
+        target: "8768311198",
+        message: "hi",
+      },
+    });
+
+    expect(call?.ctx?.agentId).toBe("main");
+    expect(call?.ctx?.mirror?.sessionKey).toBe("agent:main:main");
+    expect(call?.ctx?.params?.__sessionKey).toBe("agent:main:main");
   });
 
   it("threads explicit replyTo through executeSendAction", async () => {

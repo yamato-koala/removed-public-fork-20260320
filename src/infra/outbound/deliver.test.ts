@@ -778,6 +778,35 @@ describe("deliverOutboundPayloads", () => {
     expect(internalHookMocks.triggerInternalHook).toHaveBeenCalledTimes(1);
   });
 
+  it("waits for sent-hook completion when awaitHookCompletion is enabled", async () => {
+    let resolveHook: (() => void) | undefined;
+    internalHookMocks.triggerInternalHook.mockReturnValueOnce(
+      new Promise<void>((resolve) => {
+        resolveHook = resolve;
+      }),
+    );
+    let settled = false;
+    const delivery = deliverOutboundPayloads({
+      cfg: whatsappChunkConfig,
+      channel: "whatsapp",
+      to: "+1555",
+      payloads: [{ text: "hello" }],
+      deps: { sendWhatsApp: vi.fn().mockResolvedValue({ messageId: "w1", toJid: "jid" }) },
+      session: { key: "agent:main:main" },
+      awaitHookCompletion: true,
+    }).then(() => {
+      settled = true;
+    });
+
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(resolveHook).toBeTypeOf("function");
+
+    resolveHook?.();
+    await delivery;
+    expect(settled).toBe(true);
+  });
+
   it("warns when session.agentId is set without a session key", async () => {
     const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "w1", toJid: "jid" });
     hookMocks.runner.hasHooks.mockReturnValue(true);

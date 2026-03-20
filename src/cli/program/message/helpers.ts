@@ -1,6 +1,10 @@
 import type { Command } from "commander";
+import { resolveAgentWorkspaceDir, resolveDefaultAgentId } from "../../../agents/agent-scope.js";
 import { messageCommand } from "../../../commands/message.js";
+import { loadConfig } from "../../../config/config.js";
 import { danger, setVerbose } from "../../../globals.js";
+import { clearInternalHooks } from "../../../hooks/internal-hooks.js";
+import { loadInternalHooks } from "../../../hooks/loader.js";
 import { CHANNEL_TARGET_DESCRIPTION } from "../../../infra/outbound/channel-target.js";
 import { runGlobalGatewayStopSafely } from "../../../plugins/hook-runner-global.js";
 import { defaultRuntime } from "../../../runtime.js";
@@ -14,6 +18,8 @@ export type MessageCliHelpers = {
   withRequiredMessageTarget: (command: Command) => Command;
   runMessageAction: (action: string, opts: Record<string, unknown>) => Promise<void>;
 };
+
+let internalHooksLoaded = false;
 
 function normalizeMessageOptions(opts: Record<string, unknown>): Record<string, unknown> {
   const { account, ...rest } = opts;
@@ -29,6 +35,21 @@ async function runPluginStopHooks(): Promise<void> {
     ctx: {},
     onError: (err) => defaultRuntime.error(danger(`gateway_stop hook failed: ${String(err)}`)),
   });
+}
+
+async function ensureMessageInternalHooksLoaded(): Promise<void> {
+  if (internalHooksLoaded) {
+    return;
+  }
+  const config = loadConfig();
+  const workspaceDir = resolveAgentWorkspaceDir(config, resolveDefaultAgentId(config));
+  clearInternalHooks();
+  try {
+    await loadInternalHooks(config, workspaceDir);
+  } catch (err) {
+    defaultRuntime.error(danger(`failed to load internal hooks: ${String(err)}`));
+  }
+  internalHooksLoaded = true;
 }
 
 export function createMessageCliHelpers(
@@ -51,6 +72,7 @@ export function createMessageCliHelpers(
   const runMessageAction = async (action: string, opts: Record<string, unknown>) => {
     setVerbose(Boolean(opts.verbose));
     ensurePluginRegistryLoaded();
+    await ensureMessageInternalHooksLoaded();
     const deps = createDefaultDeps();
     let failed = false;
     await runCommandWithRuntime(

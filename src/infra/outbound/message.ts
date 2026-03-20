@@ -1,3 +1,4 @@
+import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { loadConfig } from "../../config/config.js";
 import { callGatewayLeastPrivilege, randomIdempotencyKey } from "../../gateway/call.js";
@@ -16,6 +17,7 @@ import {
   type OutboundDeliveryResult,
   type OutboundSendDeps,
 } from "./deliver.js";
+import { ensureOutboundSessionEntry, resolveOutboundSessionRoute } from "./outbound-session.js";
 import { normalizeReplyPayloadsForDelivery } from "./payloads.js";
 import { buildOutboundSessionContext } from "./session-context.js";
 import { resolveOutboundTarget } from "./targets.js";
@@ -208,10 +210,36 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
       throw resolvedTarget.error;
     }
 
+    const providedSessionKey = params.mirror?.sessionKey?.trim();
+    const sessionAgentId = providedSessionKey
+      ? resolveSessionAgentId({ sessionKey: providedSessionKey, config: cfg })
+      : undefined;
+    const defaultAgentId = resolveSessionAgentId({ config: cfg });
+    const effectiveAgentId = params.agentId ?? sessionAgentId ?? defaultAgentId;
+    const derivedRoute =
+      !providedSessionKey && effectiveAgentId
+        ? await resolveOutboundSessionRoute({
+            cfg,
+            channel: outboundChannel,
+            agentId: effectiveAgentId,
+            accountId: params.accountId,
+            target: resolvedTarget.to,
+            threadId: params.threadId,
+          })
+        : null;
+    if (derivedRoute && effectiveAgentId) {
+      await ensureOutboundSessionEntry({
+        cfg,
+        agentId: effectiveAgentId,
+        channel: outboundChannel,
+        accountId: params.accountId,
+        route: derivedRoute,
+      });
+    }
     const outboundSession = buildOutboundSessionContext({
       cfg,
-      agentId: params.agentId,
-      sessionKey: params.mirror?.sessionKey,
+      agentId: effectiveAgentId,
+      sessionKey: providedSessionKey ?? derivedRoute?.sessionKey,
     });
     const results = await deliverOutboundPayloads({
       cfg,
@@ -227,13 +255,21 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
       bestEffort: params.bestEffort,
       abortSignal: params.abortSignal,
       silent: params.silent,
+      awaitHookCompletion: true,
       mirror: params.mirror
         ? {
             ...params.mirror,
             text: mirrorText || params.content,
             mediaUrls: mirrorMediaUrls.length ? mirrorMediaUrls : undefined,
           }
-        : undefined,
+        : derivedRoute
+          ? {
+              sessionKey: derivedRoute.sessionKey,
+              agentId: effectiveAgentId,
+              text: mirrorText || params.content,
+              mediaUrls: mirrorMediaUrls.length ? mirrorMediaUrls : undefined,
+            }
+          : undefined,
     });
 
     return {

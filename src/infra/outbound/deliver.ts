@@ -248,6 +248,8 @@ type DeliverOutboundPayloadsCoreParams = {
     groupId?: string;
   };
   silent?: boolean;
+  /** Wait for sent-hook completion before returning (for short-lived CLI processes). */
+  awaitHookCompletion?: boolean;
 };
 
 type DeliverOutboundPayloadsParams = DeliverOutboundPayloadsCoreParams & {
@@ -343,9 +345,30 @@ function createMessageSentEmitter(params: {
   sessionKeyForInternalHooks?: string;
   mirrorIsGroup?: boolean;
   mirrorGroupId?: string;
-}): { emitMessageSent: (event: MessageSentEvent) => void; hasMessageSentHooks: boolean } {
+  awaitHookCompletion?: boolean;
+}): {
+  emitMessageSent: (event: MessageSentEvent) => void;
+  hasMessageSentHooks: boolean;
+  flushMessageSentHooks: () => Promise<void>;
+} {
   const hasMessageSentHooks = params.hookRunner?.hasHooks("message_sent") ?? false;
   const canEmitInternalHook = Boolean(params.sessionKeyForInternalHooks);
+  const pendingHookTasks: Promise<unknown>[] = [];
+  const dispatchHook = (
+    task: Promise<unknown>,
+    label: string,
+    logger: (message: string) => void = log.warn,
+  ) => {
+    if (!params.awaitHookCompletion) {
+      fireAndForgetHook(task, label, logger);
+      return;
+    }
+    pendingHookTasks.push(
+      task.catch((err) => {
+        logger(`${label}: ${String(err)}`);
+      }),
+    );
+  };
   const emitMessageSent = (event: MessageSentEvent) => {
     if (!hasMessageSentHooks && !canEmitInternalHook) {
       return;
@@ -363,7 +386,7 @@ function createMessageSentEmitter(params: {
       groupId: params.mirrorGroupId,
     });
     if (hasMessageSentHooks) {
-      fireAndForgetHook(
+      dispatchHook(
         params.hookRunner!.runMessageSent(
           toPluginMessageSentEvent(canonical),
           toPluginMessageContext(canonical),
@@ -377,7 +400,7 @@ function createMessageSentEmitter(params: {
     if (!canEmitInternalHook) {
       return;
     }
-    fireAndForgetHook(
+    dispatchHook(
       triggerInternalHook(
         createInternalHookEvent(
           "message",
@@ -392,7 +415,13 @@ function createMessageSentEmitter(params: {
       },
     );
   };
-  return { emitMessageSent, hasMessageSentHooks };
+  const flushMessageSentHooks = async () => {
+    if (pendingHookTasks.length === 0) {
+      return;
+    }
+    await Promise.allSettled(pendingHookTasks);
+  };
+  return { emitMessageSent, hasMessageSentHooks, flushMessageSentHooks };
 }
 
 async function applyMessageSendingHook(params: {
@@ -679,7 +708,7 @@ async function deliverOutboundPayloadsCore(
   const sessionKeyForInternalHooks = params.mirror?.sessionKey ?? params.session?.key;
   const mirrorIsGroup = params.mirror?.isGroup;
   const mirrorGroupId = params.mirror?.groupId;
-  const { emitMessageSent, hasMessageSentHooks } = createMessageSentEmitter({
+  const { emitMessageSent, hasMessageSentHooks, flushMessageSentHooks } = createMessageSentEmitter({
     hookRunner,
     channel,
     to,
@@ -687,6 +716,7 @@ async function deliverOutboundPayloadsCore(
     sessionKeyForInternalHooks,
     mirrorIsGroup,
     mirrorGroupId,
+    awaitHookCompletion: params.awaitHookCompletion,
   });
   const hasMessageSendingHooks = hookRunner?.hasHooks("message_sending") ?? false;
   if (hasMessageSentHooks && params.session?.agentId && !sessionKeyForInternalHooks) {
@@ -823,6 +853,8 @@ async function deliverOutboundPayloadsCore(
       });
     }
   }
+
+  await flushMessageSentHooks();
 
   return results;
 }

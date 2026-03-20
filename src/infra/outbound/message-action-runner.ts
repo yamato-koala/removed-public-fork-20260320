@@ -394,6 +394,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
     resolvedTarget,
     abortSignal,
   } = ctx;
+  const effectiveAgentId = agentId ?? resolveSessionAgentId({ config: cfg });
   throwIfAborted(abortSignal);
   const action: ChannelMessageActionName = "send";
   const to = readStringParam(params, "to", { required: true });
@@ -489,11 +490,11 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
     allowSlackAutoThread: channel === "slack" && !replyToId,
   });
   const outboundRoute =
-    agentId && !dryRun
+    effectiveAgentId && !dryRun
       ? await resolveOutboundSessionRoute({
           cfg,
           channel,
-          agentId,
+          agentId: effectiveAgentId,
           accountId,
           target: to,
           resolvedTarget,
@@ -501,10 +502,10 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
           threadId: resolvedThreadId,
         })
       : null;
-  if (outboundRoute && agentId && !dryRun) {
+  if (outboundRoute && effectiveAgentId && !dryRun) {
     await ensureOutboundSessionEntry({
       cfg,
-      agentId,
+      agentId: effectiveAgentId,
       channel,
       accountId,
       route: outboundRoute,
@@ -513,8 +514,8 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
   if (outboundRoute && !dryRun) {
     params.__sessionKey = outboundRoute.sessionKey;
   }
-  if (agentId) {
-    params.__agentId = agentId;
+  if (effectiveAgentId) {
+    params.__agentId = effectiveAgentId;
   }
   const mirrorMediaUrls =
     mergedMediaUrls.length > 0 ? mergedMediaUrls : mediaUrl ? [mediaUrl] : undefined;
@@ -524,7 +525,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
       cfg,
       channel,
       params,
-      agentId,
+      agentId: effectiveAgentId,
       accountId: accountId ?? undefined,
       gateway,
       toolContext: input.toolContext,
@@ -534,7 +535,7 @@ async function handleSendAction(ctx: ResolvedActionContext): Promise<MessageActi
         outboundRoute && !dryRun
           ? {
               sessionKey: outboundRoute.sessionKey,
-              agentId,
+              agentId: effectiveAgentId,
               text: message,
               mediaUrls: mirrorMediaUrls,
             }

@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const messageCommandMock = vi.fn(async () => {});
+const loadConfigMock = vi.fn(() => ({}));
+const resolveAgentWorkspaceDirMock = vi.fn(() => "/tmp/openclaw-test-workspace");
+const resolveDefaultAgentIdMock = vi.fn(() => "main");
+const clearInternalHooksMock = vi.fn();
+const loadInternalHooksMock = vi.fn(async () => 0);
 vi.mock("../../../commands/message.js", () => ({
   messageCommand: messageCommandMock,
 }));
@@ -12,6 +17,23 @@ vi.mock("../../../globals.js", () => ({
 
 vi.mock("../../plugin-registry.js", () => ({
   ensurePluginRegistryLoaded: vi.fn(),
+}));
+
+vi.mock("../../../config/config.js", () => ({
+  loadConfig: loadConfigMock,
+}));
+
+vi.mock("../../../agents/agent-scope.js", () => ({
+  resolveAgentWorkspaceDir: resolveAgentWorkspaceDirMock,
+  resolveDefaultAgentId: resolveDefaultAgentIdMock,
+}));
+
+vi.mock("../../../hooks/internal-hooks.js", () => ({
+  clearInternalHooks: clearInternalHooksMock,
+}));
+
+vi.mock("../../../hooks/loader.js", () => ({
+  loadInternalHooks: loadInternalHooksMock,
 }));
 
 const hasHooksMock = vi.fn((_hookName: string) => false);
@@ -51,7 +73,7 @@ vi.mock("../../deps.js", () => ({
   createDefaultDeps: () => ({}),
 }));
 
-const { createMessageCliHelpers } = await import("./helpers.js");
+let createMessageCliHelpers: typeof import("./helpers.js").createMessageCliHelpers;
 
 const baseSendOptions = {
   channel: "discord",
@@ -81,9 +103,16 @@ function expectNoAccountFieldInPassedOptions() {
 }
 
 describe("runMessageAction", () => {
-  beforeEach(() => {
+  beforeEach(async () => {
+    vi.resetModules();
     vi.clearAllMocks();
+    ({ createMessageCliHelpers } = await import("./helpers.js"));
     messageCommandMock.mockClear().mockResolvedValue(undefined);
+    loadConfigMock.mockClear().mockReturnValue({});
+    resolveAgentWorkspaceDirMock.mockClear().mockReturnValue("/tmp/openclaw-test-workspace");
+    resolveDefaultAgentIdMock.mockClear().mockReturnValue("main");
+    clearInternalHooksMock.mockClear();
+    loadInternalHooksMock.mockClear().mockResolvedValue(0);
     hasHooksMock.mockClear().mockReturnValue(false);
     runGatewayStopMock.mockClear().mockResolvedValue(undefined);
     runGlobalGatewayStopSafelyMock.mockClear();
@@ -95,6 +124,8 @@ describe("runMessageAction", () => {
   it("calls exit(0) after successful message delivery", async () => {
     await runSendAction();
 
+    expect(clearInternalHooksMock).toHaveBeenCalledOnce();
+    expect(loadInternalHooksMock).toHaveBeenCalledWith({}, "/tmp/openclaw-test-workspace");
     expect(exitMock).toHaveBeenCalledOnce();
     expect(exitMock).toHaveBeenCalledWith(0);
   });
