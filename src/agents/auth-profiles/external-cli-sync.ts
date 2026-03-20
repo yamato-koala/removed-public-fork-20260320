@@ -91,11 +91,17 @@ function resolveCodexSyncTargetProfileId(
   store: AuthProfileStore,
   creds: OAuthCredential & { provider: string; accountId?: string },
 ): string {
-  const existingCodexProfiles = Object.entries(store.profiles).filter(
-    ([profileId, credential]) =>
-      profileId !== CODEX_CLI_PROFILE_ID &&
-      credential.type === "oauth" &&
-      credential.provider === "openai-codex",
+  const existingCodexProfiles = Object.entries(store.profiles).flatMap(
+    ([profileId, credential]) => {
+      if (
+        profileId === CODEX_CLI_PROFILE_ID ||
+        credential.type !== "oauth" ||
+        credential.provider !== "openai-codex"
+      ) {
+        return [];
+      }
+      return [[profileId, credential] as [string, OAuthCredential]];
+    },
   );
   if (creds.accountId) {
     const matching = existingCodexProfiles.find(
