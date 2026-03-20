@@ -12,6 +12,12 @@ let writeClaudeCliKeychainCredentials: typeof import("./cli-credentials.js").wri
 let writeClaudeCliCredentials: typeof import("./cli-credentials.js").writeClaudeCliCredentials;
 let readCodexCliCredentials: typeof import("./cli-credentials.js").readCodexCliCredentials;
 
+function createJwtWithExp(expSeconds: number): string {
+  const encode = (value: Record<string, unknown>) =>
+    Buffer.from(JSON.stringify(value), "utf8").toString("base64url");
+  return `${encode({ alg: "none", typ: "JWT" })}.${encode({ exp: expSeconds })}.sig`;
+}
+
 function mockExistingClaudeKeychainItem() {
   execFileSyncMock.mockImplementation((file: unknown, args: unknown) => {
     const argv = Array.isArray(args) ? args.map(String) : [];
@@ -238,7 +244,7 @@ describe("cli credentials", () => {
       expect(cmd).toContain(accountHash);
       return JSON.stringify({
         tokens: {
-          access_token: "keychain-access",
+          access_token: createJwtWithExp(1_799_452_800),
           refresh_token: "keychain-refresh",
         },
         last_refresh: "2026-01-01T00:00:00Z",
@@ -248,9 +254,10 @@ describe("cli credentials", () => {
     const creds = readCodexCliCredentials({ platform: "darwin", execSync: execSyncMock });
 
     expect(creds).toMatchObject({
-      access: "keychain-access",
+      access: createJwtWithExp(1_799_452_800),
       refresh: "keychain-refresh",
       provider: "openai-codex",
+      expires: 1_799_452_800_000,
     });
   });
 
@@ -267,7 +274,7 @@ describe("cli credentials", () => {
       authPath,
       JSON.stringify({
         tokens: {
-          access_token: "file-access",
+          access_token: createJwtWithExp(1_795_132_800),
           refresh_token: "file-refresh",
         },
       }),
@@ -277,9 +284,10 @@ describe("cli credentials", () => {
     const creds = readCodexCliCredentials({ execSync: execSyncMock });
 
     expect(creds).toMatchObject({
-      access: "file-access",
+      access: createJwtWithExp(1_795_132_800),
       refresh: "file-refresh",
       provider: "openai-codex",
+      expires: 1_795_132_800_000,
     });
   });
 });

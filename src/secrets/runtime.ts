@@ -6,6 +6,7 @@ import {
   loadAuthProfileStoreForSecretsRuntime,
   replaceRuntimeAuthProfileStoreSnapshots,
 } from "../agents/auth-profiles.js";
+import { setRuntimeAuthProfileStoreRefreshHandler } from "../agents/auth-profiles/store.js";
 import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshotRefreshHandler,
@@ -99,6 +100,33 @@ function resolveRefreshAgentDirs(
   return [...new Set([...context.explicitAgentDirs, ...configDerived])];
 }
 
+async function refreshSecretsRuntimeSnapshotFromSourceConfig(
+  sourceConfig: OpenClawConfig,
+): Promise<boolean> {
+  if (!activeSnapshot || !activeRefreshContext) {
+    return false;
+  }
+  const refreshed = await prepareSecretsRuntimeSnapshot({
+    config: sourceConfig,
+    env: activeRefreshContext.env,
+    agentDirs: resolveRefreshAgentDirs(sourceConfig, activeRefreshContext),
+    loadAuthStore: activeRefreshContext.loadAuthStore,
+  });
+  activateSecretsRuntimeSnapshot(refreshed);
+  return true;
+}
+
+export async function refreshActiveSecretsRuntimeSnapshot(): Promise<boolean> {
+  if (!activeSnapshot) {
+    return false;
+  }
+  return await refreshSecretsRuntimeSnapshotFromSourceConfig(activeSnapshot.sourceConfig);
+}
+
+setRuntimeAuthProfileStoreRefreshHandler(async () => {
+  await refreshActiveSecretsRuntimeSnapshot();
+});
+
 export async function prepareSecretsRuntimeSnapshot(params: {
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;
@@ -181,17 +209,7 @@ export function activateSecretsRuntimeSnapshot(snapshot: PreparedSecretsRuntimeS
   activeRefreshContext = cloneRefreshContext(refreshContext);
   setRuntimeConfigSnapshotRefreshHandler({
     refresh: async ({ sourceConfig }) => {
-      if (!activeSnapshot || !activeRefreshContext) {
-        return false;
-      }
-      const refreshed = await prepareSecretsRuntimeSnapshot({
-        config: sourceConfig,
-        env: activeRefreshContext.env,
-        agentDirs: resolveRefreshAgentDirs(sourceConfig, activeRefreshContext),
-        loadAuthStore: activeRefreshContext.loadAuthStore,
-      });
-      activateSecretsRuntimeSnapshot(refreshed);
-      return true;
+      return await refreshSecretsRuntimeSnapshotFromSourceConfig(sourceConfig);
     },
   });
 }

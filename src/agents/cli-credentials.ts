@@ -138,6 +138,31 @@ function resolveCodexHomePath() {
   }
 }
 
+function decodeJwtPayload(token: string): Record<string, unknown> | null {
+  const parts = token.split(".");
+  if (parts.length < 2 || !parts[1]) {
+    return null;
+  }
+  try {
+    const normalized = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const decoded = Buffer.from(padded, "base64").toString("utf8");
+    const parsed = JSON.parse(decoded);
+    return parsed && typeof parsed === "object" ? (parsed as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+function resolveCodexTokenExpiry(accessToken: string, fallbackExpires: number): number {
+  const payload = decodeJwtPayload(accessToken);
+  const exp = payload?.exp;
+  if (typeof exp !== "number" || !Number.isFinite(exp) || exp <= 0) {
+    return fallbackExpires;
+  }
+  return exp * 1000;
+}
+
 function resolveQwenCliCredentialsPath(homeDir?: string) {
   const baseDir = homeDir ?? resolveUserPath("~");
   return path.join(baseDir, QWEN_CLI_CREDENTIALS_RELATIVE_PATH);
@@ -193,9 +218,10 @@ function readCodexKeychainCredentials(options?: {
       typeof lastRefreshRaw === "string" || typeof lastRefreshRaw === "number"
         ? new Date(lastRefreshRaw).getTime()
         : Date.now();
-    const expires = Number.isFinite(lastRefresh)
+    const fallbackExpires = Number.isFinite(lastRefresh)
       ? lastRefresh + 60 * 60 * 1000
       : Date.now() + 60 * 60 * 1000;
+    const expires = resolveCodexTokenExpiry(accessToken, fallbackExpires);
     const accountId = typeof tokens?.account_id === "string" ? tokens.account_id : undefined;
 
     log.info("read codex credentials from keychain", {
@@ -483,13 +509,14 @@ export function readCodexCliCredentials(options?: {
     return null;
   }
 
-  let expires: number;
+  let fallbackExpires: number;
   try {
     const stat = fs.statSync(authPath);
-    expires = stat.mtimeMs + 60 * 60 * 1000;
+    fallbackExpires = stat.mtimeMs + 60 * 60 * 1000;
   } catch {
-    expires = Date.now() + 60 * 60 * 1000;
+    fallbackExpires = Date.now() + 60 * 60 * 1000;
   }
+  const expires = resolveCodexTokenExpiry(accessToken, fallbackExpires);
 
   return {
     type: "oauth",

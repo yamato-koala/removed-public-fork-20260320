@@ -19,6 +19,8 @@ type LoadAuthProfileStoreOptions = {
 const AUTH_PROFILE_TYPES = new Set<AuthProfileCredential["type"]>(["api_key", "oauth", "token"]);
 
 const runtimeAuthStoreSnapshots = new Map<string, AuthProfileStore>();
+let runtimeAuthProfileStoreRefreshHandler: ((agentDir?: string) => Promise<void> | void) | null =
+  null;
 
 function resolveRuntimeStoreKey(agentDir?: string): string {
   return resolveAuthStorePath(agentDir);
@@ -75,6 +77,12 @@ export function replaceRuntimeAuthProfileStoreSnapshots(
 
 export function clearRuntimeAuthProfileStoreSnapshots(): void {
   runtimeAuthStoreSnapshots.clear();
+}
+
+export function setRuntimeAuthProfileStoreRefreshHandler(
+  handler: ((agentDir?: string) => Promise<void> | void) | null,
+): void {
+  runtimeAuthProfileStoreRefreshHandler = handler;
 }
 
 export async function updateAuthProfileStoreWithLock(params: {
@@ -506,4 +514,12 @@ export function saveAuthProfileStore(store: AuthProfileStore, agentDir?: string)
     usageStats: store.usageStats ?? undefined,
   } satisfies AuthProfileStore;
   saveJsonFile(authPath, payload);
+  if (runtimeAuthProfileStoreRefreshHandler) {
+    void Promise.resolve(runtimeAuthProfileStoreRefreshHandler(agentDir)).catch((error) => {
+      log.debug("failed to refresh active runtime auth snapshot after auth store save", {
+        agentDir,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
 }

@@ -1,13 +1,17 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   activateSecretsRuntimeSnapshot,
   clearSecretsRuntimeSnapshot,
   prepareSecretsRuntimeSnapshot,
 } from "../secrets/runtime.js";
-import { ensureAuthProfileStore, markAuthProfileUsed } from "./auth-profiles.js";
+import {
+  ensureAuthProfileStore,
+  markAuthProfileUsed,
+  saveAuthProfileStore,
+} from "./auth-profiles.js";
 
 describe("auth profile runtime snapshot persistence", () => {
   it("does not write resolved plaintext keys during usage updates", async () => {
@@ -63,6 +67,71 @@ describe("auth profile runtime snapshot persistence", () => {
         source: "env",
         provider: "default",
         id: "OPENAI_API_KEY",
+      });
+    } finally {
+      clearSecretsRuntimeSnapshot();
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refreshes active auth runtime snapshots after auth store saves", async () => {
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-auth-runtime-refresh-"));
+    const agentDir = path.join(stateDir, "agents", "main", "agent");
+    const authPath = path.join(agentDir, "auth-profiles.json");
+    try {
+      await fs.mkdir(agentDir, { recursive: true });
+      await fs.writeFile(
+        authPath,
+        `${JSON.stringify(
+          {
+            version: 1,
+            profiles: {
+              "openai-codex:default": {
+                type: "oauth",
+                provider: "openai-codex",
+                access: "stale-access",
+                refresh: "stale-refresh",
+                expires: 1,
+              },
+            },
+          },
+          null,
+          2,
+        )}\n`,
+        "utf8",
+      );
+
+      const snapshot = await prepareSecretsRuntimeSnapshot({
+        config: {},
+        agentDirs: [agentDir],
+      });
+      activateSecretsRuntimeSnapshot(snapshot);
+
+      expect(ensureAuthProfileStore(agentDir).profiles["openai-codex:default"]).toMatchObject({
+        access: "stale-access",
+      });
+
+      saveAuthProfileStore(
+        {
+          version: 1,
+          profiles: {
+            "openai-codex:default": {
+              type: "oauth",
+              provider: "openai-codex",
+              access: "fresh-access",
+              refresh: "fresh-refresh",
+              expires: Date.now() + 60_000,
+            },
+          },
+        },
+        agentDir,
+      );
+
+      await vi.waitFor(() => {
+        expect(ensureAuthProfileStore(agentDir).profiles["openai-codex:default"]).toMatchObject({
+          access: "fresh-access",
+          refresh: "fresh-refresh",
+        });
       });
     } finally {
       clearSecretsRuntimeSnapshot();

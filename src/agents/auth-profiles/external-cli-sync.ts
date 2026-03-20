@@ -1,8 +1,10 @@
 import {
+  readCodexCliCredentialsCached,
   readQwenCliCredentialsCached,
   readMiniMaxCliCredentialsCached,
 } from "../cli-credentials.js";
 import {
+  CODEX_CLI_PROFILE_ID,
   EXTERNAL_CLI_NEAR_EXPIRY_MS,
   EXTERNAL_CLI_SYNC_TTL_MS,
   QWEN_CLI_PROFILE_ID,
@@ -30,14 +32,18 @@ function shallowEqualOAuthCredentials(a: OAuthCredential | undefined, b: OAuthCr
   );
 }
 
-function isExternalProfileFresh(cred: AuthProfileCredential | undefined, now: number): boolean {
+function isExternalProfileFresh(
+  cred: AuthProfileCredential | undefined,
+  provider: string,
+  now: number,
+): boolean {
   if (!cred) {
     return false;
   }
   if (cred.type !== "oauth" && cred.type !== "token") {
     return false;
   }
-  if (cred.provider !== "qwen-portal" && cred.provider !== "minimax-portal") {
+  if (cred.provider !== provider) {
     return false;
   }
   if (typeof cred.expires !== "number") {
@@ -56,7 +62,7 @@ function syncExternalCliCredentialsForProvider(
 ): boolean {
   const existing = store.profiles[profileId];
   const shouldSync =
-    !existing || existing.provider !== provider || !isExternalProfileFresh(existing, now);
+    !existing || existing.provider !== provider || !isExternalProfileFresh(existing, provider, now);
   const creds = shouldSync ? readCredentials() : null;
   if (!creds) {
     return false;
@@ -81,6 +87,30 @@ function syncExternalCliCredentialsForProvider(
   return false;
 }
 
+function resolveCodexSyncTargetProfileId(
+  store: AuthProfileStore,
+  creds: OAuthCredential & { provider: string; accountId?: string },
+): string {
+  const existingCodexProfiles = Object.entries(store.profiles).filter(
+    ([profileId, credential]) =>
+      profileId !== CODEX_CLI_PROFILE_ID &&
+      credential.type === "oauth" &&
+      credential.provider === "openai-codex",
+  );
+  if (creds.accountId) {
+    const matching = existingCodexProfiles.find(
+      ([, credential]) => credential.accountId === creds.accountId,
+    );
+    if (matching) {
+      return matching[0];
+    }
+  }
+  if (store.profiles["openai-codex:default"]?.provider === "openai-codex") {
+    return "openai-codex:default";
+  }
+  return existingCodexProfiles[0]?.[0] ?? "openai-codex:default";
+}
+
 /**
  * Sync OAuth credentials from external CLI tools (Qwen Code CLI, MiniMax CLI) into the store.
  *
@@ -90,12 +120,28 @@ export function syncExternalCliCredentials(store: AuthProfileStore): boolean {
   let mutated = false;
   const now = Date.now();
 
+  const codexCreds = readCodexCliCredentialsCached({ ttlMs: EXTERNAL_CLI_SYNC_TTL_MS });
+  if (codexCreds) {
+    const targetProfileId = resolveCodexSyncTargetProfileId(store, codexCreds);
+    if (
+      syncExternalCliCredentialsForProvider(
+        store,
+        targetProfileId,
+        "openai-codex",
+        () => codexCreds,
+        now,
+      )
+    ) {
+      mutated = true;
+    }
+  }
+
   // Sync from Qwen Code CLI
   const existingQwen = store.profiles[QWEN_CLI_PROFILE_ID];
   const shouldSyncQwen =
     !existingQwen ||
     existingQwen.provider !== "qwen-portal" ||
-    !isExternalProfileFresh(existingQwen, now);
+    !isExternalProfileFresh(existingQwen, "qwen-portal", now);
   const qwenCreds = shouldSyncQwen
     ? readQwenCliCredentialsCached({ ttlMs: EXTERNAL_CLI_SYNC_TTL_MS })
     : null;
