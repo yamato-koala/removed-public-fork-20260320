@@ -622,6 +622,10 @@ export async function runCronIsolatedAgentTurn(params: {
             bootstrapContextMode: agentPayload?.lightContext ? "lightweight" : undefined,
             bootstrapContextRunKind: "cron",
             runId: cronSession.sessionEntry.sessionId,
+            runContext: {
+              sessionTarget: "isolated",
+              cronJobId: params.job.id,
+            },
             requireExplicitMessageTarget: toolPolicy.requireExplicitMessageTarget,
             disableMessageTool: toolPolicy.disableMessageTool,
             allowTransientCooldownProbe: runOptions?.allowTransientCooldownProbe,

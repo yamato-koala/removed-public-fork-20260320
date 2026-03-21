@@ -501,6 +501,7 @@ export async function runMemoryFlushIfNeeded(params: {
           ...senderContext,
           ...runBaseParams,
           trigger: "memory",
+          runContext: { maintenanceScope: "memory-flush" },
           memoryFlushWritePath,
           prompt: resolveMemoryFlushPromptForRun({
             prompt: memoryFlushSettings.prompt,

@@ -326,6 +326,7 @@ export async function runAgentTurnWithFallback(params: {
             const result = await runEmbeddedPiAgent({
               ...embeddedContext,
               trigger: params.isHeartbeat ? "heartbeat" : "user",
+              runContext: { sessionTarget: "main" },
               groupId: resolveGroupSessionKey(params.sessionCtx)?.id,
               groupChannel:
                 params.sessionCtx.GroupChannel?.trim() ?? params.sessionCtx.GroupSubject?.trim(),
